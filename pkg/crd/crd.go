@@ -349,6 +349,7 @@ func handleCRD(crds []v1.CustomResourceDefinition, portConfig *port.IntegrationA
 			if err != nil {
 				if strings.Contains(err.Error(), "taken") {
 					if portConfig.OverwriteCRDsActions {
+						klog.Infof("Action already exists, configuration overwriteCrdsActions: true in the exporter configuration, overwriting action")
 						_, err = cli.UpdateAction(portClient, act)
 						if err != nil {
 							klog.Errorf("Error updating blueprint action: %s", err.Error())
