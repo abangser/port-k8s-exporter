@@ -60,6 +60,11 @@ func NewConfiguration() (*port.Config, error) {
 		DeleteDependents:                ApplicationConfig.DeleteDependents,
 	}
 
+	klog.Infof("ABBY checking config",
+		"config.OverwriteCRDsActions", config.OverwriteCRDsActions,
+		"ApplicationConfig.OverwriteCRDsActions", ApplicationConfig.OverwriteCRDsActions,
+	)
+
 	v, err := os.ReadFile(ApplicationConfig.ConfigFilePath)
 	if err != nil {
 		v = []byte("{}")

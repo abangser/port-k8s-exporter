@@ -348,7 +348,7 @@ func handleCRD(crds []v1.CustomResourceDefinition, portConfig *port.IntegrationA
 			_, err = cli.CreateAction(portClient, act)
 			if err != nil {
 				if strings.Contains(err.Error(), "taken") {
-					if goutils.GetBoolEnvOrDefault("OVERWRITE_CRDS_ACTIONS", true) {
+					if portConfig.OverwriteCRDsActions {
 						klog.Infof("Action already exists, configuration overwriteCrdsActions: true in the exporter configuration, overwriting action")
 						_, err = cli.UpdateAction(portClient, act)
 						if err != nil {
