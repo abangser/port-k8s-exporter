@@ -39,7 +39,7 @@ func Init() {
 	NewString(&ApplicationConfig.PortClientSecret, "port-client-secret", "", "Port client secret. Required.")
 	NewBool(&ApplicationConfig.CreateDefaultResources, "create-default-resources", true, "Create default resources on installation. Optional.")
 	NewCreatePortResourcesOrigin(&ApplicationConfig.CreatePortResourcesOrigin, "create-default-resources-origin", "Port", "Create default resources origin on installation. Optional.")
-
+	NewBool(&ApplicationConfig.OverwriteCRDsActions, "overwrite-crds-actions", true, "Overwrite CRDs actions on installation. Optional.")
 	NewBool(&ApplicationConfig.OverwriteConfigurationOnRestart, "overwrite-configuration-on-restart", false, "Overwrite the configuration in port on restarting the exporter. Optional.")
 
 	// Deprecated
@@ -56,6 +56,7 @@ func NewConfiguration() (*port.Config, error) {
 		CreateDefaultResources:          ApplicationConfig.CreateDefaultResources,
 		CreatePortResourcesOrigin:       ApplicationConfig.CreatePortResourcesOrigin,
 		ResyncInterval:                  ApplicationConfig.ResyncInterval,
+		OverwriteCRDsActions:            ApplicationConfig.OverwriteCRDsActions,
 		OverwriteConfigurationOnRestart: ApplicationConfig.OverwriteConfigurationOnRestart,
 		CreateMissingRelatedEntities:    ApplicationConfig.CreateMissingRelatedEntities,
 		DeleteDependents:                ApplicationConfig.DeleteDependents,
