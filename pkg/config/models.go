@@ -28,4 +28,17 @@ type ApplicationConfiguration struct {
 	DeleteDependents             bool `json:"deleteDependents,omitempty"`
 	CreateMissingRelatedEntities bool `json:"createMissingRelatedEntities,omitempty"`
 	UpdateEntityOnlyOnDiff       bool `json:"updateEntityOnlyOnDiff,omitempty"`
+	// HTTP Logging configuration
+	HTTPLoggingEnabled bool   `json:"httpLoggingEnabled,omitempty"`
+	LoggingLevel       string `json:"loggingLevel,omitempty"`
+	HTTPLoggingTimeout int    `json:"httpLoggingTimeout,omitempty"` // in seconds
+	// Bulk sync configuration
+	BulkSyncMaxPayloadBytes     int `json:"bulkSyncMaxPayloadBytes,omitempty"`
+	BulkSyncMaxEntitiesPerBatch int `json:"bulkSyncMaxEntitiesPerBatch,omitempty"`
+	BulkSyncBatchTimeoutSeconds int `json:"bulkSyncBatchTimeoutSeconds,omitempty"`
+	// Debug Mode
+	DebugMode bool `json:"debugMode,omitempty"`
+	// Metrics Configuration
+	MetricsEnabled bool `json:"metricsEnabled,omitempty"`
+	MetricsPort    int  `json:"metricsPort,omitempty"`
 }

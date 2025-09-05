@@ -2,19 +2,22 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
+
 	"github.com/port-labs/port-k8s-exporter/pkg/config"
 	"github.com/port-labs/port-k8s-exporter/pkg/crd"
 	"github.com/port-labs/port-k8s-exporter/pkg/goutils"
 	"github.com/port-labs/port-k8s-exporter/pkg/k8s"
+	"github.com/port-labs/port-k8s-exporter/pkg/logger"
+	"github.com/port-labs/port-k8s-exporter/pkg/metrics"
 	"github.com/port-labs/port-k8s-exporter/pkg/port"
 	"github.com/port-labs/port-k8s-exporter/pkg/port/cli"
 	"github.com/port-labs/port-k8s-exporter/pkg/port/integration"
 	"github.com/port-labs/port-k8s-exporter/pkg/signal"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/dynamicinformer"
-	"k8s.io/klog/v2"
-	"sync"
-	"time"
 )
 
 type ControllersHandler struct {
@@ -24,11 +27,26 @@ type ControllersHandler struct {
 	portClient       *cli.PortClient
 	stopCh           chan struct{}
 	isStopped        bool
+	portConfig       *port.IntegrationAppConfig
 }
 
+type FullResyncResults struct {
+	EntitiesSets              []map[string]interface{}
+	ShouldDeleteStaleEntities bool
+}
+
+type ResyncType string
+
+const (
+	INITIAL_RESYNC   ResyncType = "initial resync"
+	SCHEDULED_RESYNC ResyncType = "scheduled resync"
+	MAPPING_CHANGED  ResyncType = "mapping changed"
+)
+
+var controllerHandler *ControllersHandler
+
 func NewControllersHandler(exporterConfig *port.Config, portConfig *port.IntegrationAppConfig, k8sClient *k8s.Client, portClient *cli.PortClient) *ControllersHandler {
-	resync := time.Minute * time.Duration(exporterConfig.ResyncInterval)
-	informersFactory := dynamicinformer.NewDynamicSharedInformerFactory(k8sClient.DynamicClient, resync)
+	informersFactory := dynamicinformer.NewDynamicSharedInformerFactory(k8sClient.DynamicClient, 0)
 
 	crd.AutodiscoverCRDsToActions(portConfig, k8sClient.ApiExtensionClient, portClient)
 
@@ -48,7 +66,7 @@ func NewControllersHandler(exporterConfig *port.Config, portConfig *port.Integra
 		var gvr schema.GroupVersionResource
 		gvr, err := k8s.GetGVRFromResource(k8sClient.DiscoveryMapper, kind)
 		if err != nil {
-			klog.Errorf("Error getting GVR, skip handling for resource '%s': %s.", kind, err.Error())
+			logger.Errorf("Error getting GVR, skip handling for resource '%s': %s.", kind, err.Error())
 			continue
 		}
 
@@ -63,54 +81,22 @@ func NewControllersHandler(exporterConfig *port.Config, portConfig *port.Integra
 		stateKey:         exporterConfig.StateKey,
 		portClient:       portClient,
 		stopCh:           signal.SetupSignalHandler(),
+		portConfig:       portConfig,
 	}
 
 	return controllersHandler
 }
 
-func (c *ControllersHandler) Handle() {
-	klog.Info("Starting informers")
+func (c *ControllersHandler) Handle(resyncType ResyncType) {
+	logger.Infow(fmt.Sprintf("Starting resync due to %s", resyncType), "stateKey", c.stateKey)
+	logger.Info("Starting informers")
 	c.informersFactory.Start(c.stopCh)
 
-	currentEntitiesSets := make([]map[string]interface{}, 0)
-	shouldDeleteStaleEntities := true
-	var syncWg sync.WaitGroup
-
-	for _, controller := range c.controllers {
-		controller := controller
-
-		go func() {
-			<-c.stopCh
-			klog.Info("Shutting down controllers")
-			controller.Shutdown()
-			klog.Info("Exporter exiting")
-		}()
-
-		klog.Infof("Waiting for informer cache to sync for resource '%s'", controller.Resource.Kind)
-		if err := controller.WaitForCacheSync(c.stopCh); err != nil {
-			klog.Fatalf("Error while waiting for informer cache sync: %s", err.Error())
-		}
-
-		syncWg.Add(1)
-		go func() {
-			defer syncWg.Done()
-			klog.Infof("Starting full initial resync for resource '%s'", controller.Resource.Kind)
-			initialSyncResult := controller.RunInitialSync()
-			klog.Infof("Done full initial resync, starting live events sync for resource '%s'", controller.Resource.Kind)
-			controller.RunEventsSync(1, c.stopCh)
-			if initialSyncResult.EntitiesSet != nil {
-				currentEntitiesSets = append(currentEntitiesSets, initialSyncResult.EntitiesSet)
-			}
-			if len(initialSyncResult.RawDataExamples) > 0 {
-				err := integration.PostIntegrationKindExample(c.portClient, c.stateKey, controller.Resource.Kind, initialSyncResult.RawDataExamples)
-				if err != nil {
-					klog.Warningf("failed to post integration kind example: %s", err.Error())
-				}
-			}
-			shouldDeleteStaleEntities = shouldDeleteStaleEntities && initialSyncResult.ShouldDeleteStaleEntities
-		}()
+	resyncResults, err := syncAllControllers(c)
+	if err != nil {
+		logger.Errorw("Error syncing controllers", "resyncType", resyncType, "error", err.Error())
+		return
 	}
-	syncWg.Wait()
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
@@ -119,25 +105,124 @@ func (c *ControllersHandler) Handle() {
 		cancelCtx()
 	}()
 
-	if shouldDeleteStaleEntities {
-		klog.Info("Deleting stale entities")
-		c.runDeleteStaleEntities(ctx, currentEntitiesSets)
-		klog.Info("Done deleting stale entities")
-	} else {
-		klog.Warning("Skipping delete of stale entities due to a failure in getting all current entities from k8s")
+	if resyncResults.ShouldDeleteStaleEntities {
+		logger.Info("Deleting stale entities")
+		err := c.runDeleteStaleEntities(ctx, resyncResults.EntitiesSets)
+		if err != nil {
+			logger.Errorw("Error deleting stale entities", "error", err.Error())
+		}
+		logger.Info("Done deleting stale entities")
+		metrics.SetSuccessStatusConditionally(metrics.MetricKindReconciliation, metrics.MetricPhaseDelete, err == nil)
+		return
 	}
+
+	logger.Warning("Skipping delete of stale entities due to a failure in getting all current entities from k8s")
 }
 
-func (c *ControllersHandler) runDeleteStaleEntities(ctx context.Context, currentEntitiesSet []map[string]interface{}) {
-	_, err := c.portClient.Authenticate(ctx, c.portClient.ClientID, c.portClient.ClientSecret)
-	if err != nil {
-		klog.Errorf("error authenticating with Port: %v", err)
+func RunResync(exporterConfig *port.Config, k8sClient *k8s.Client, portClient *cli.PortClient, resyncType ResyncType) error {
+	if controllerHandler != (*ControllersHandler)(nil) {
+		controllerHandler.Stop()
 	}
 
-	err = c.portClient.DeleteStaleEntities(ctx, c.stateKey, goutils.MergeMaps(currentEntitiesSet...))
-	if err != nil {
-		klog.Errorf("error deleting stale entities: %s", err.Error())
+	newControllersHandler, resyncErr := metrics.MeasureResync(func() (*ControllersHandler, error) {
+		i, err := integration.GetIntegration(portClient, exporterConfig.StateKey)
+		if err != nil {
+			metrics.SetSuccessStatus(metrics.MetricKindResync, metrics.MetricPhaseResync, metrics.PhaseFailed)
+			return nil, fmt.Errorf("error getting Port integration: %v", err)
+		}
+		if i.Config == nil {
+			metrics.SetSuccessStatus(metrics.MetricKindResync, metrics.MetricPhaseResync, metrics.PhaseFailed)
+			return nil, errors.New("integration config is nil")
+		}
+
+		newHandler := NewControllersHandler(exporterConfig, i.Config, k8sClient, portClient)
+		newHandler.Handle(resyncType)
+		return newHandler, nil
+	})
+	controllerHandler = newControllersHandler
+
+	return resyncErr
+}
+
+func syncAllControllers(c *ControllersHandler) (*FullResyncResults, error) {
+	return metrics.MeasureDuration(metrics.MetricKindResync, metrics.MetricPhaseResync, func(phase string) (*FullResyncResults, error) {
+		currentEntitiesSets := make([]map[string]interface{}, 0)
+		shouldDeleteStaleEntities := true
+		var syncWg sync.WaitGroup
+
+		for _, controller := range c.controllers {
+			go func() {
+				<-c.stopCh
+				logger.Info("Shutting down controllers")
+				controller.Shutdown()
+			}()
+
+			metrics.InitializeMetricsForController(&controller.Resource)
+			metrics.MeasureDuration(metrics.GetKindLabel(controller.Resource.Kind, nil), metrics.MetricPhaseExtract, func(phase string) (struct{}, error) {
+				logger.Infof("Waiting for informer cache to sync for resource '%s'", controller.Resource.Kind)
+				if err := controller.WaitForCacheSync(c.stopCh); err != nil {
+					logger.Errorw("Error while waiting for informer cache sync", "error", err.Error())
+				}
+				// For compatibility to other object kind metrics, we add
+				// this metric per kind and not once per resource
+				for kindIndex := range controller.Resource.KindConfigs {
+					metrics.AddObjectCount(metrics.GetKindLabel(controller.Resource.Kind, &kindIndex), metrics.MetricRawExtractedResult, phase, float64(controller.InitialSyncWorkqueueLen()/len(controller.Resource.KindConfigs)))
+				}
+				return struct{}{}, nil
+			})
+
+			if c.portConfig.CreateMissingRelatedEntities {
+				syncWg.Add(1)
+				go func() {
+					defer syncWg.Done()
+					controllerEntitiesSet, controllerShouldDeleteStaleEntities := syncController(controller, c)
+					currentEntitiesSets = append(currentEntitiesSets, controllerEntitiesSet)
+					shouldDeleteStaleEntities = shouldDeleteStaleEntities && controllerShouldDeleteStaleEntities
+				}()
+				continue
+			}
+			controllerEntitiesSet, controllerShouldDeleteStaleEntities := syncController(controller, c)
+			currentEntitiesSets = append(currentEntitiesSets, controllerEntitiesSet)
+			shouldDeleteStaleEntities = shouldDeleteStaleEntities && controllerShouldDeleteStaleEntities
+		}
+		syncWg.Wait()
+		metrics.SetSuccessStatusConditionally(metrics.MetricKindResync, phase, shouldDeleteStaleEntities)
+
+		return &FullResyncResults{
+			EntitiesSets:              currentEntitiesSets,
+			ShouldDeleteStaleEntities: shouldDeleteStaleEntities,
+		}, nil
+	})
+}
+
+func syncController(controller *k8s.Controller, c *ControllersHandler) (map[string]interface{}, bool) {
+	logger.Infof("Starting full initial resync for resource '%s'", controller.Resource.Kind)
+	initialSyncResult := controller.RunInitialSync()
+	logger.Infof("Done full initial resync, starting live events sync for resource '%s'", controller.Resource.Kind)
+	controller.RunEventsSync(1, c.stopCh)
+	if len(initialSyncResult.RawDataExamples) > 0 {
+		err := integration.PostIntegrationKindExample(c.portClient, c.stateKey, controller.Resource.Kind, initialSyncResult.RawDataExamples)
+		if err != nil {
+			logger.Warningf("failed to post integration kind example: %s", err.Error())
+		}
 	}
+	if initialSyncResult.EntitiesSet != nil {
+		return initialSyncResult.EntitiesSet, initialSyncResult.ShouldDeleteStaleEntities
+	}
+
+	return map[string]interface{}{}, initialSyncResult.ShouldDeleteStaleEntities
+}
+
+func (c *ControllersHandler) runDeleteStaleEntities(ctx context.Context, currentEntitiesSet []map[string]interface{}) error {
+	_, err := metrics.MeasureDuration(metrics.MetricKindReconciliation, metrics.MetricPhaseDelete, func(phase string) (struct{}, error) {
+		err := c.portClient.DeleteStaleEntities(ctx, c.stateKey, goutils.MergeMaps(currentEntitiesSet...))
+		if err != nil {
+			logger.Errorw("error deleting stale entities", "error", err.Error())
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (c *ControllersHandler) Stop() {
@@ -145,7 +230,7 @@ func (c *ControllersHandler) Stop() {
 		return
 	}
 
-	klog.Info("Stopping controllers")
+	logger.Info("Stopping controllers")
 	close(c.stopCh)
 	c.isStopped = true
 }

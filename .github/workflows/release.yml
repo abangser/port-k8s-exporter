@@ -46,15 +46,22 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.23
+          go-version: 1.24.4
           cache: true
 
-      # https://stackoverflow.com/questions/51475992/cgo-cross-compiling-from-amd64linux-to-arm64linux/75368290#75368290
-      - name: musl-cross for CGO Support
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: latest
+
+      - name: Make zig-cc wrappers
         run: |
-          mkdir ../../musl-cross
-          wget -P ~ https://musl.cc/aarch64-linux-musl-cross.tgz
-          tar -xvf ~/aarch64-linux-musl-cross.tgz -C ../../musl-cross
+          sudo tee /usr/local/bin/zigcc-arm64 >/dev/null <<'EOF' 
+          #!/usr/bin/env sh
+          # Transparently call Zig's musl-enabled cross-compiler
+          exec zig cc -target aarch64-linux-musl "$@"
+          EOF
+          sudo chmod 755 /usr/local/bin/zigcc-arm64
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

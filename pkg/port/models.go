@@ -36,6 +36,13 @@ type (
 		EventListener       *EventListenerSettings `json:"changelogDestination,omitempty"`
 		Config              *IntegrationAppConfig  `json:"config,omitempty"`
 		UpdatedAt           *time.Time             `json:"updatedAt,omitempty"`
+		LogAttributes       *LogAttributes         `json:"logAttributes,omitempty"`
+		Identifier          string                 `json:"identifier,omitempty"`
+	}
+
+	LogAttributes struct {
+		IngestUrl string `json:"ingestUrl,omitempty"`
+		IngestId  string `json:"ingestId,omitempty"`
 	}
 
 	Example struct {
@@ -139,6 +146,11 @@ type (
 		MirrorProperties      map[string]BlueprintMirrorProperty      `json:"mirrorProperties,omitempty"`
 		ChangelogDestination  *ChangelogDestination                   `json:"changelogDestination,omitempty"`
 		Relations             map[string]Relation                     `json:"relations,omitempty"`
+		Ownership             *Ownership                              `json:"ownership,omitempty"`
+	}
+
+	Ownership struct {
+		Type string `json:"type,omitempty"`
 	}
 
 	Page struct {
@@ -217,6 +229,11 @@ type SearchBody struct {
 	Combinator string `json:"combinator"`
 }
 
+type DatasourceSearchBody struct {
+	DatasourcePrefix string `json:"datasource_prefix"`
+	DatasourceSuffix string `json:"datasource_suffix"`
+}
+
 type ResponseBody struct {
 	OK               bool                `json:"ok"`
 	Entity           Entity              `json:"entity"`
@@ -230,6 +247,31 @@ type ResponseBody struct {
 	Pages            Page                `json:"pages"`
 	MigrationId      string              `json:"migrationId"`
 	Migration        Migration           `json:"migration"`
+}
+
+type BulkUpsertRequest struct {
+	Entities []EntityRequest `json:"entities"`
+}
+
+type BulkEntityResult struct {
+	Created        bool                   `json:"created"`
+	Identifier     string                 `json:"identifier"`
+	Index          int                    `json:"index"`
+	AdditionalData map[string]interface{} `json:"additionalData,omitempty"`
+}
+
+type BulkEntityError struct {
+	Identifier string `json:"identifier"`
+	Index      int    `json:"index"`
+	StatusCode int    `json:"statusCode"`
+	Error      string `json:"error"`
+	Message    string `json:"message"`
+}
+
+type BulkUpsertResponse struct {
+	OK       bool               `json:"ok"`
+	Entities []BulkEntityResult `json:"entities"`
+	Errors   []BulkEntityError  `json:"errors"`
 }
 
 type Migration struct {
@@ -246,7 +288,7 @@ type EntityMapping struct {
 	Title      string                 `json:"title,omitempty" yaml:"title,omitempty"`
 	Blueprint  string                 `json:"blueprint" yaml:"blueprint"`
 	Icon       string                 `json:"icon,omitempty" yaml:"icon,omitempty"`
-	Team       string                 `json:"team,omitempty" yaml:"team,omitempty"`
+	Team       interface{}            `json:"team,omitempty" yaml:"team,omitempty"`
 	Properties map[string]string      `json:"properties,omitempty" yaml:"properties,omitempty"`
 	Relations  map[string]interface{} `json:"relations,omitempty" yaml:"relations,omitempty"`
 }
@@ -261,13 +303,21 @@ type EntityRequest struct {
 	Relations  map[string]interface{} `json:"relations,omitempty" yaml:"relations,omitempty"`
 }
 
+type EventSource string
+
+const (
+	LiveEventsSource EventSource = "live-events"
+	ResyncSource     EventSource = "resync"
+)
+
 type EntityMappings struct {
 	Mappings []EntityMapping `json:"mappings" yaml:"mappings"`
 }
 
 type Port struct {
-	Entity       EntityMappings `json:"entity" yaml:"entity"`
-	ItemsToParse string         `json:"itemsToParse,omitempty" yaml:"itemsToParse"`
+	Entity           EntityMappings `json:"entity" yaml:"entity"`
+	ItemsToParse     string         `json:"itemsToParse,omitempty" yaml:"itemsToParse"`
+	ItemsToParseName string         `json:"itemsToParseName,omitempty" yaml:"itemsToParseName"`
 }
 
 type Selector struct {
@@ -328,4 +378,8 @@ type Config struct {
 	OverwriteCRDsActions         bool       `yaml:"overwriteCrdsActions,omitempty"`
 	DeleteDependents             bool       `yaml:"deleteDependents,omitempty"`
 	CreateMissingRelatedEntities bool       `yaml:"createMissingRelatedEntities,omitempty"`
+}
+
+type Team struct {
+	Name string `json:"name"`
 }

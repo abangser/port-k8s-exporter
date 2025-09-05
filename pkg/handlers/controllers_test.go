@@ -264,7 +264,7 @@ func newFixture(t *testing.T, fixtureConfig *fixtureConfig) *fixture {
 		}
 	}
 
-	err := defaults.InitIntegration(portClient, exporterConfig)
+	err := defaults.InitIntegration(portClient, exporterConfig, "unknown", true)
 	if err != nil {
 		t.Errorf("error initializing integration: %v", err)
 	}
@@ -468,21 +468,8 @@ func (f *fixture) assertObjectsHandled(objects []struct{ kind, name string }) {
 	}, time.Second*15, time.Millisecond*500)
 
 	assert.Eventually(f.t, func() bool {
-		entities, err := f.portClient.SearchEntities(context.Background(), port.SearchBody{
-			Rules: []port.Rule{
-				{
-					Property: "$datasource",
-					Operator: "contains",
-					Value:    f.controllersHandler.stateKey,
-				},
-				{
-					Property: "$datasource",
-					Operator: "contains",
-					Value:    fmt.Sprintf("statekey/%s", f.controllersHandler.stateKey),
-				},
-			},
-			Combinator: "and",
-		})
+		processedStateKey := fmt.Sprintf("(statekey/%s)", f.controllersHandler.stateKey)
+		entities, err := f.portClient.SearchEntitiesByDatasource(context.Background(), "port-k8s-exporter", processedStateKey)
 
 		for _, obj := range objects {
 			found := false
@@ -502,7 +489,7 @@ func (f *fixture) assertObjectsHandled(objects []struct{ kind, name string }) {
 }
 
 func (f *fixture) runControllersHandle() {
-	f.controllersHandler.Handle()
+	f.controllersHandler.Handle(INITIAL_RESYNC)
 }
 
 func TestSuccessfulControllersHandle(t *testing.T) {
@@ -615,4 +602,23 @@ func TestControllersHandler_Stop(t *testing.T) {
 	f.controllersHandler.Stop()
 	assert.True(t, f.controllersHandler.isStopped)
 	assert.Panics(t, func() { close(f.controllersHandler.stopCh) })
+}
+
+func TestControllersHandler_RunResyncNotOverlaps(t *testing.T) {
+	stateKey := guuid.NewString()
+	resources := []port.Resource{getBaseResource(stateKey, deploymentKind)}
+	f := newFixture(t, &fixtureConfig{stateKey: stateKey, resources: resources, existingObjects: []runtime.Object{}})
+	defer tearDownFixture(t, f)
+
+	RunResync(&port.Config{StateKey: stateKey}, f.k8sClient, f.portClient, SCHEDULED_RESYNC)
+	firstControllersHandler := controllerHandler
+
+	RunResync(&port.Config{StateKey: stateKey}, f.k8sClient, f.portClient, SCHEDULED_RESYNC)
+	secondControllersHandler := controllerHandler
+
+	assert.NotNil(t, firstControllersHandler)
+	assert.NotNil(t, secondControllersHandler)
+	assert.NotEqual(t, firstControllersHandler, secondControllersHandler)
+	assert.True(t, firstControllersHandler.isStopped)
+	assert.False(t, secondControllersHandler.isStopped)
 }
